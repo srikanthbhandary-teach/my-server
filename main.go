@@ -1,149 +1,115 @@
-package main
+/*
+Package client provides a client for interacting with the MyInfo server.
+
+This package is maintained by Srikanth Bhandary.
+*/
+package client
 
 import (
+	"bytes"
 	"encoding/json"
-	"log"
+	"fmt"
+	"io/ioutil"
 	"net/http"
-	"os"
-	"os/signal"
-	"sync"
 )
 
-const myAppSecret = "myAppSecret12254"
-
-// MyInfo represents information about an entity.
-type MyInfo struct {
-	ID   string `json:"number"`
-	Name string `json:"name"`
-	Age  int    `json:"age"`
+// Client represents the client for the MyInfo server.
+type Client struct {
+	baseURL string
+	apiKey  string
 }
 
-// MyServer is responsible for managing MyInfo entities.
-type MyServer struct {
-	m    sync.Mutex
-	data map[string]MyInfo
-}
-
-// AddMyInfo adds a new MyInfo entity or updates an existing one.
-func (s *MyServer) AddMyInfo(info MyInfo) {
-	s.m.Lock()
-	defer s.m.Unlock()
-	s.data[info.ID] = info
-}
-
-// GetMyInfo retrieves a MyInfo entity by its ID.
-func (s *MyServer) GetMyInfo(id string) (*MyInfo, bool) {
-	s.m.Lock()
-	defer s.m.Unlock()
-	info, ok := s.data[id]
-	return &info, ok
-}
-
-// GetAllMyInfo retrieves all MyInfo entities.
-func (s *MyServer) GetAllMyInfo() []MyInfo {
-	s.m.Lock()
-	defer s.m.Unlock()
-	var allInfo []MyInfo
-	for _, info := range s.data {
-		allInfo = append(allInfo, info)
-	}
-	return allInfo
-}
-
-// DeleteMyInfo deletes a MyInfo entity by its ID.
-func (s *MyServer) DeleteMyInfo(id string) {
-	s.m.Lock()
-	defer s.m.Unlock()
-	delete(s.data, id)
-}
-
-// UpdateMyInfo updates an existing MyInfo entity by its ID.
-func (s *MyServer) UpdateMyInfo(id string, info MyInfo) bool {
-	s.m.Lock()
-	defer s.m.Unlock()
-	_, ok := s.data[id]
-	if ok {
-		s.data[id] = info
-	}
-	return ok
-}
-
-// ServeHTTP handles incoming HTTP requests and dispatches them based on the HTTP method.
-func (s *MyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.Header.Get("api-key") != myAppSecret {
-		log.Println(r.Header.Get("api-key"))
-		w.WriteHeader(http.StatusUnauthorized)
-		w.Write([]byte("Unauthorized"))
-		return
-	}
-
-	switch r.Method {
-	case http.MethodGet:
-		id := r.URL.Query().Get("id")
-		if id == "" {
-			data := s.GetAllMyInfo()
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(data)
-			return
-		}
-
-		info, ok := s.GetMyInfo(id)
-		if !ok {
-			w.WriteHeader(http.StatusNotFound)
-			w.Write([]byte("Not Found"))
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(info)
-	case http.MethodPost:
-		var info MyInfo
-		err := json.NewDecoder(r.Body).Decode(&info)
-		if err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte("Bad Request"))
-			return
-		}
-		s.AddMyInfo(info)
-		w.WriteHeader(http.StatusCreated)
-		w.Write([]byte("Created"))
-	case http.MethodPut:
-		id := r.URL.Query().Get("id")
-		var info MyInfo
-		err := json.NewDecoder(r.Body).Decode(&info)
-		if err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte("Bad Request"))
-			return
-		}
-		if s.UpdateMyInfo(id, info) {
-			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("OK"))
-		} else {
-			w.WriteHeader(http.StatusNotFound)
-			w.Write([]byte("Not Found"))
-		}
-	case http.MethodDelete:
-		id := r.URL.Query().Get("id")
-		s.DeleteMyInfo(id)
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
-	default:
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		w.Write([]byte("Method Not Allowed"))
+// NewClient creates a new Client with the specified baseURL and apiKey.
+func NewClient(baseURL, apiKey string) *Client {
+	return &Client{
+		baseURL: baseURL,
+		apiKey:  apiKey,
 	}
 }
 
-func main() {
-	ch := make(chan os.Signal, 1)
-	signal.Notify(ch, os.Interrupt)
-	go func() {
-		<-ch
-		log.Println("Shutting down server...")
-		os.Exit(0)
-	}()
-	s := &MyServer{
-		data: make(map[string]MyInfo),
+// CreateMyInfo sends a POST request to create a new MyInfo entity.
+func (c *Client) CreateMyInfo(id, name string, age int) error {
+	url := fmt.Sprintf("%s/?id=%s", c.baseURL, id)
+
+	info := map[string]interface{}{
+		"number": id,
+		"name":   name,
+		"age":    age,
 	}
-	log.Println("Starting server on port 8080")
-	log.Fatal(http.ListenAndServe(":8080", s))
+
+	payload, err := json.Marshal(info)
+	if err != nil {
+		return fmt.Errorf("error marshaling request payload: %v", err)
+	}
+
+	return c.sendRequest("POST", url, payload)
+}
+
+// GetMyInfo sends a GET request to retrieve a MyInfo entity by its ID.
+func (c *Client) GetMyInfo(id string) (*MyInfo, error) {
+	url := fmt.Sprintf("%s/?id=%s", c.baseURL, id)
+
+	responseBody, err := c.sendRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var info MyInfo
+	if err := json.Unmarshal(responseBody, &info); err != nil {
+		return nil, fmt.Errorf("error unmarshaling response: %v", err)
+	}
+
+	return &info, nil
+}
+
+// UpdateMyInfo sends a PUT request to update an existing MyInfo entity.
+func (c *Client) UpdateMyInfo(id, name string, age int) error {
+	url := fmt.Sprintf("%s/?id=%s", c.baseURL, id)
+
+	info := map[string]interface{}{
+		"number": id,
+		"name":   name,
+		"age":    age,
+	}
+
+	payload, err := json.Marshal(info)
+	if err != nil {
+		return fmt.Errorf("error marshaling request payload: %v", err)
+	}
+
+	return c.sendRequest("PUT", url, payload)
+}
+
+// DeleteMyInfo sends a DELETE request to delete a MyInfo entity by its ID.
+func (c *Client) DeleteMyInfo(id string) error {
+	url := fmt.Sprintf("%s/?id=%s", c.baseURL, id)
+
+	return c.sendRequest("DELETE", url, nil)
+}
+
+func (c *Client) sendRequest(method, url string, payload []byte) ([]byte, error) {
+	req, err := http.NewRequest(method, url, bytes.NewBuffer(payload))
+	if err != nil {
+		return nil, fmt.Errorf("error creating %s request: %v", method, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("api-key", c.apiKey)
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("error sending %s request: %v", method, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+	}
+
+	responseBody, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("error reading response body: %v", err)
+	}
+
+	return responseBody, nil
 }
